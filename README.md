@@ -11,52 +11,62 @@ A stateless authentication starter built around one Spring Boot issuer, short-li
 - Docker Compose publishes only the gateway. The backends and issuer have no host-published ports and share only the private backend network with the gateway.
 - No database or Redis. Logout and immediate token revocation are not implemented; an issued token remains valid until its original expiry, including after a password change.
 
-## Run locally
+## Quickstart
 
-Requirements: Docker Engine with the Compose plugin, OpenSSL, and Python 3 with `venv` support.
-To run the Java tests directly on the host, also install Java 21 and Maven; container builds use the JDK in their build images.
+Requirements: Docker Engine with the Compose plugin, OpenSSL, and Python 3 with `venv` support. Container builds use their own JDK images; Java 21 and Maven are needed only to run the Java tests directly on the host.
 
-1. Run `./scripts/dev-init.sh`. On first run it creates a local RSA key and prompts for an account name and password. The password is Argon2id-hashed into the ignored `secrets/accounts.json` file. Choose the audiences and scopes the local account should have; the starter defaults grant both example components.
-2. Run `docker compose up --build`.
-3. The gateway listens on `http://127.0.0.1:8080` by default. Only this local development listener is published; use TLS and a production-grade secrets manager before exposing the service beyond localhost.
+1. Initialize local development secrets and create an account. On first run, the script generates an RSA signing key, installs the account-tool dependencies, then prompts for a username and password. The default account can access both example components.
 
-The `secrets/` directory is excluded from Git and created with owner-only directory permissions. The local Compose file mounts read-only key and account files for the non-root auth process. Production should use the platform's native secret manager and stricter deployment-specific file permissions.
+   ```sh
+   ./scripts/dev-init.sh
+   ```
 
-## Get and use a token
+2. Build and start the stack. Keep this terminal open while using the service.
 
-`POST /auth/token` accepts an account, one allowed audience, and the requested subset of that account's scopes:
+   ```sh
+   docker compose up --build
+   ```
 
-```json
-{
-  "username": "alice",
-  "password": "your local password",
-  "audience": "component-a",
-  "scopes": ["component-a.read"]
-}
-```
+3. In another terminal, check that the gateway is ready:
 
-The response contains `access_token`, `token_type` (`Bearer`), and `expires_in`. The default lifetime is 600 seconds and is capped at one hour.
+   ```sh
+   curl http://127.0.0.1:8080/healthz
+   ```
 
-Send the returned token to the intended component:
+   It should return `{"status":"ok"}`. The gateway listens on `http://127.0.0.1:8080` by default.
 
-```sh
-curl -i http://127.0.0.1:8080/component-a/whoami \
-  -H "Authorization: Bearer <component-a-token>"
+4. Request a token for Component A. Replace the username and password placeholders with the account created in step 1. The response includes an `access_token` (default lifetime: 600 seconds, maximum: one hour).
 
-curl -i http://127.0.0.1:8080/component-b/whoami \
-  -H "Authorization: Bearer <component-b-token>"
-```
+   ```sh
+   curl -i http://127.0.0.1:8080/auth/token \
+     -H 'Content-Type: application/json' \
+     -d '{"username":"<your-username>","password":"<your-password>","audience":"component-a","scopes":["component-a.read"]}'
+   ```
 
-A component-A token cannot be used for component B, and a token without that component's required scope is denied at the gateway before proxying. Missing, malformed, expired, wrong-issuer, wrong-audience, or unverifiable tokens are rejected. The backends also check the gateway-provided identity headers as defense in depth; those headers are not a substitute for the private network boundary.
+5. Use the returned access token to call the protected endpoint:
 
-The static account file is loaded at service startup. To add an account later, run the account tool with the desired permissions, then restart the auth service:
+   ```sh
+   curl -i http://127.0.0.1:8080/component-a/whoami \
+     -H 'Authorization: Bearer <component-a-token>'
+   ```
+
+   To try Component B, request a token with audience `component-b` and scope `component-b.read`, then call `/component-b/whoami` with that token. Tokens are audience-specific: a Component A token cannot access Component B. Stop the stack with `docker compose down`.
+
+The local Compose file publishes only the gateway on the loopback interface. Use TLS and a production-grade secrets manager before exposing the service beyond localhost. The `secrets/` directory is excluded from Git, created with owner-only directory permissions, and mounted read-only for the non-root auth process. Use the platform's native secret manager and stricter deployment-specific file permissions in production.
+
+## Accounts and access control
+
+`POST /auth/token` accepts an account, one allowed audience, and a requested subset of that account's scopes. An account cannot request permissions that were not assigned to it. Missing, malformed, expired, wrong-issuer, wrong-audience, or unverifiable tokens are rejected. The backends also check gateway-provided identity headers as defense in depth; those headers are not a substitute for the private network boundary.
+
+The static account file is loaded at service startup. To add an account later, run the account tool with the desired permissions; it prompts for the username and password and refuses to overwrite an existing username. Restart the auth service after updating the file:
 
 ```sh
 .venv/bin/python scripts/create-account.py \
   --audience component-a --scope component-a.read
+docker compose up -d --force-recreate auth-service
 ```
 
-The tool prompts for the username and password. It refuses to overwrite an existing username. Do not commit `secrets/`, production account data, signing keys, or real credentials.
+Do not commit `secrets/`, production account data, signing keys, or real credentials.
 
 ## Verify locally
 
