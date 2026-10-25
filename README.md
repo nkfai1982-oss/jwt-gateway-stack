@@ -1,63 +1,83 @@
 # JWT Gateway Stack
 
-An implementation plan for a stateless authentication service and an open-source NGINX-based gateway. The design keeps application backends private, uses one token issuer, and applies authorization policy per component.
+A stateless authentication starter built around one Spring Boot issuer, short-lived RS256 access tokens, and an OpenResty edge gateway. The gateway validates tokens against the issuer's cached JWKS and applies an audience and scope policy per backend. The Spring and FastAPI backends are reachable only on Compose's internal network.
 
-## Architecture
+## What is implemented
 
-```text
-Client
-  │ credentials
-  ▼
-Spring Boot Auth Service ── RS256 access token
-  │                           │
-  ├── Protected static account file (Argon2id password hashes)
-  └── JWKS endpoint (public verification keys)
-                              │
-Client ── Bearer token ──► OpenResty Gateway (NGINX Open Source)
-                              │ validate signature, issuer, time,
-                              │ audience, and route scopes
-                 ┌────────────┴─────────────┐
-                 ▼                          ▼
-          Component A backend        Component B backend
-          private network only       private network only
+- Static accounts stored as Argon2id hashes; passwords are entered interactively and never written to the account file in plaintext.
+- A Spring Boot auth service that issues RS256 access tokens and publishes a public-only JWKS at `/.well-known/jwks.json`.
+- OpenResty validation of the explicit `RS256` algorithm, signature, issuer, time claims, audience, and required route scope. JWKS is cached locally for 60 seconds; the gateway fails closed when validation or JWKS retrieval fails.
+- Component A (`Spring Boot`) requires `component-a` audience and `component-a.read` scope. Component B (`FastAPI`) requires `component-b` and `component-b.read`.
+- Docker Compose publishes only the gateway. The backends and issuer have no host-published ports and share only the private backend network with the gateway.
+- No database or Redis. Logout and immediate token revocation are not implemented; an issued token remains valid until its original expiry, including after a password change.
+
+## Run locally
+
+Requirements: Docker Engine with the Compose plugin, OpenSSL, and Python 3 with `venv` support.
+To run the Java tests directly on the host, also install Java 21 and Maven; container builds use the JDK in their build images.
+
+1. Run `./scripts/dev-init.sh`. On first run it creates a local RSA key and prompts for an account name and password. The password is Argon2id-hashed into the ignored `secrets/accounts.json` file. Choose the audiences and scopes the local account should have; the starter defaults grant both example components.
+2. Run `docker compose up --build`.
+3. The gateway listens on `http://127.0.0.1:8080` by default. Only this local development listener is published; use TLS and a production-grade secrets manager before exposing the service beyond localhost.
+
+The `secrets/` directory is excluded from Git and created with owner-only directory permissions. The local Compose file mounts read-only key and account files for the non-root auth process. Production should use the platform's native secret manager and stricter deployment-specific file permissions.
+
+## Get and use a token
+
+`POST /auth/token` accepts an account, one allowed audience, and the requested subset of that account's scopes:
+
+```json
+{
+  "username": "alice",
+  "password": "your local password",
+  "audience": "component-a",
+  "scopes": ["component-a.read"]
+}
 ```
 
-The Spring Boot authentication service verifies credentials against a protected static file containing Argon2id hashes, then signs short-lived access tokens with an RS256 private key. It publishes only public verification keys through a JWKS endpoint. OpenResty, an open-source NGINX distribution with Lua support, validates tokens at the gateway before forwarding requests to backends that are not directly exposed to clients.
+The response contains `access_token`, `token_type` (`Bearer`), and `expires_in`. The default lifetime is 600 seconds and is capped at one hour.
 
-Use one issuer for the stack. Isolation is separation of concerns, not separate identity systems: each component has its own audience and scope requirements, enforced by gateway route policy. A request must satisfy the token's signature, issuer, time validity, the route's expected audience, and the required scopes before it is proxied.
+Send the returned token to the intended component:
 
-## Decisions
+```sh
+curl -i http://127.0.0.1:8080/component-a/whoami \
+  -H "Authorization: Bearer <component-a-token>"
 
-- **Accounts:** Static password accounts; no RDBMS and no Redis.
-- **Password storage:** Argon2id hashes in a protected static file. Do not store plaintext passwords.
-- **Issuer and tokens:** One issuer, RS256-signed, short-lived access tokens, with public keys published as JWKS.
-- **Gateway:** OpenResty using NGINX Open Source for JWT validation and routing.
-- **Authorization boundaries:** Component-specific audiences, scopes, and route policies under the shared issuer.
-- **Backend exposure:** Backends remain private and accept traffic only from the gateway or explicitly trusted internal callers.
-- **Logout:** Not required. Tokens are stateless and expire naturally.
+curl -i http://127.0.0.1:8080/component-b/whoami \
+  -H "Authorization: Bearer <component-b-token>"
+```
 
-## Implementation phases
+A component-A token cannot be used for component B, and a token without that component's required scope is denied at the gateway before proxying. Missing, malformed, expired, wrong-issuer, wrong-audience, or unverifiable tokens are rejected. The backends also check the gateway-provided identity headers as defense in depth; those headers are not a substitute for the private network boundary.
 
-1. **Repository and configuration skeleton:** Define service boundaries, local development conventions, example environment/configuration files, and deployment topology. Keep secrets and private keys out of version control.
-2. **Authentication service:** Implement credential verification against the static account file, Argon2id verification, login/token issuance, short access-token lifetimes, and a JWKS endpoint. Define safe key loading and rotation procedures.
-3. **Gateway validation:** Configure OpenResty to retrieve/cache JWKS, validate RS256 signatures and standard claims, and fail closed on invalid or unverifiable tokens.
-4. **Component policies and routing:** Map gateway routes to component-specific audiences and required scopes. Verify unauthorized requests are rejected before reaching a backend.
-5. **Private backend integration:** Place backends on private network paths, restrict inbound access to the gateway, and add end-to-end smoke tests for permitted and denied traffic.
-6. **Security and operations hardening:** Add tests for expiry, wrong issuer/audience, missing scopes, key rotation, and JWKS outages; document secure file permissions, key backup/rotation, deployment, and incident response.
+The static account file is loaded at service startup. To add an account later, run the account tool with the desired permissions, then restart the auth service:
 
-## Security notes and caveats
+```sh
+.venv/bin/python scripts/create-account.py \
+  --audience component-a --scope component-a.read
+```
 
-- **Password changes do not revoke tokens already issued.** Existing access tokens remain valid until their expiry time. Keep token lifetimes short and account for this delay in password-change procedures.
-- Protect the static account file and signing private key with restrictive filesystem permissions and deployment secret controls. Never commit production credentials, account files, or private keys.
-- Validate the allowed signing algorithm explicitly; do not trust an algorithm selected by an untrusted token header. Validate `iss`, `exp`, `nbf` when present, `aud`, and route-specific scopes.
-- Define JWKS caching and key-rotation overlap so newly issued tokens remain verifiable without extending acceptance of expired tokens.
-- Keep backend network access private; gateway validation is not a substitute for network-level access controls.
-- The no-logout decision means there is no immediate per-token revocation mechanism in this design. If immediate revocation later becomes necessary, revisit the architecture rather than assuming password changes invalidate existing tokens.
+The tool prompts for the username and password. It refuses to overwrite an existing username. Do not commit `secrets/`, production account data, signing keys, or real credentials.
 
-## Initial acceptance checks
+## Verify locally
 
-- A valid token for the expected issuer and audience with the required scope reaches only its intended component.
-- Invalid signature, expired token, wrong issuer, wrong audience, or missing scope is rejected at the gateway.
-- Backend services cannot be reached directly from untrusted networks.
-- Password change behavior is documented and tested: previously issued tokens work only until their original expiry.
-- JWKS key rotation can verify tokens signed by both the current and retiring key during the planned overlap, then stops accepting the retiring key after the overlap.
+```sh
+mvn -f services/auth/pom.xml test
+mvn -f services/spring-api/pom.xml test
+
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt -r services/python-api/requirements.txt
+PYTHONPATH=services/python-api .venv/bin/pytest tests services/python-api/tests
+```
+
+The Compose smoke check requires Docker. After startup, `curl http://127.0.0.1:8080/healthz` should return `{"status":"ok"}`; invalid or cross-component tokens should receive a 401 or 403 and must not reach a backend.
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GATEWAY_PORT` | `8080` | Local host port for the gateway. |
+| `JWT_ISSUER` | `http://jwt-gateway-stack/auth` | Shared issuer identifier; used by the issuer and gateway verifier. |
+| `JWT_KEY_ID` | `dev-rsa-1` | Public JWKS key identifier. |
+| `JWT_ACCESS_TOKEN_TTL_SECONDS` | `600` | Access-token lifetime, 60–3600 seconds. |
+
+If changing `JWT_ISSUER`, set the same value in both the issuer and gateway configuration. The gateway's JWKS cache currently uses a single active signing key for this starter. Planned hardening includes a deliberate dual-key rotation overlap, rate limiting, TLS/deployment configuration, and end-to-end Compose tests. Do not treat the initial dev key generation script as a production key-management process.

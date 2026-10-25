@@ -1,0 +1,17 @@
+# Never commit local signing keys or static account data
+/secrets/*
+!/secrets/.gitkeep
+*.pem
+*.key
+
+# JVM builds
+**/target/
+
+# Python
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+*.py[cod]
+
+# Local environment files
+.env

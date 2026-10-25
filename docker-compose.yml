@@ -1,0 +1,82 @@
+name: jwt-gateway-stack
+
+services:
+  gateway:
+    build: ./gateway
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    environment:
+      JWT_ISSUER: ${JWT_ISSUER:-http://jwt-gateway-stack/auth}
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      spring-api:
+        condition: service_healthy
+      python-api:
+        condition: service_healthy
+    networks:
+      - edge
+      - backend
+    restart: unless-stopped
+
+  auth-service:
+    build: ./services/auth
+    environment:
+      JWT_ISSUER: ${JWT_ISSUER:-http://jwt-gateway-stack/auth}
+      JWT_KEY_ID: ${JWT_KEY_ID:-dev-rsa-1}
+      JWT_ACCESS_TOKEN_TTL_SECONDS: ${JWT_ACCESS_TOKEN_TTL_SECONDS:-600}
+      JWT_PRIVATE_KEY_FILE: /run/secrets/jwt_private_key
+      AUTH_ACCOUNTS_FILE: /run/secrets/accounts
+    secrets:
+      - jwt_private_key
+      - accounts
+    expose:
+      - "8080"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  spring-api:
+    build: ./services/spring-api
+    expose:
+      - "8080"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  python-api:
+    build: ./services/python-api
+    expose:
+      - "8000"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  edge:
+  backend:
+    internal: true
+
+secrets:
+  jwt_private_key:
+    file: ./secrets/jwt-private.pem
+  accounts:
+    file: ./secrets/accounts.json

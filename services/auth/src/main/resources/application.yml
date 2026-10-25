@@ -1,0 +1,22 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+jwt:
+  issuer: ${JWT_ISSUER:http://jwt-gateway-stack/auth}
+  key-id: ${JWT_KEY_ID:dev-rsa-1}
+  access-token-ttl-seconds: ${JWT_ACCESS_TOKEN_TTL_SECONDS:600}
+  private-key-file: ${JWT_PRIVATE_KEY_FILE:/run/secrets/jwt_private_key}
+
+auth:
+  accounts-file: ${AUTH_ACCOUNTS_FILE:/run/secrets/accounts}
