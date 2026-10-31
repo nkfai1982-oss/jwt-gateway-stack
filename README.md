@@ -91,27 +91,3 @@ The Compose smoke check requires Docker. After startup, `curl http://127.0.0.1:8
 | `JWT_ACCESS_TOKEN_TTL_SECONDS` | `600` | Access-token lifetime, 60–3600 seconds. |
 
 If changing `JWT_ISSUER`, set the same value in both the issuer and gateway configuration. The gateway's JWKS cache currently uses a single active signing key for this starter. Planned hardening includes a deliberate dual-key rotation overlap, rate limiting, TLS/deployment configuration, and end-to-end Compose tests. Do not treat the initial dev key generation script as a production key-management process.
-
-
-## GitHub Agentic Workflows demo
-
-This repository includes a small, **manual-only** [GitHub Agentic Workflows (`gh-aw`)](https://github.github.com/gh-aw/) example. The [workflow source](.github/workflows/jwt-gateway-demo.md) combines YAML frontmatter (trigger, AI engine, permissions, and allowed outputs) with plain-English instructions. The generated [`jwt-gateway-demo.lock.yml`](.github/workflows/jwt-gateway-demo.lock.yml) is the compiled GitHub Actions workflow; edit the Markdown source, then regenerate the lock file instead of editing it by hand.
-
-The example inspects the JWT gateway in read-only mode and prepares at most one evidence-based architecture follow-up as a proposed issue. It runs only when manually started, and `safe-outputs.staged: true` means the proposal appears in the Actions run summary without creating an issue. This shows the basic loop: **describe the job → compile it → run an agent in Actions → review its proposed output**.
-
-To try it:
-
-1. Ensure GitHub Actions are enabled for the repository and configure Copilot authentication. Because this is a personal-account repository, the Copilot engine needs a fine-grained personal access token with the **Copilot Requests: Read** account permission, saved in repository Actions secrets as `COPILOT_GITHUB_TOKEN`. See GitHub's [Copilot authentication guide](https://github.github.com/gh-aw/reference/auth/).
-2. Install the [`gh-aw` GitHub CLI extension](https://github.github.com/gh-aw/setup/quick-start/) if it is not already installed, then compile from the repository root:
-
-   ```sh
-   gh extension install github/gh-aw
-   gh aw compile jwt-gateway-demo
-   ```
-
-3. Commit both the `.md` source and generated `.lock.yml`, push them to the default branch, then open **Actions → JWT Gateway demo → Run workflow**. Enter an optional focus hint and start the run. Review the proposed issue in the run summary.
-
-Keep staging enabled while learning or tuning the prompt. To allow the workflow to create its proposed issue later, remove `staged: true` from the source and recompile; the output remains limited to the declared `create-issue` operation. For details, see GitHub's [workflow authoring guide](https://docs.github.com/en/copilot/how-tos/github-agentic-workflows/creating-github-agentic-workflows) and [staged mode guide](https://github.github.com/gh-aw/reference/staged-mode/).
-
-
-The compiler also creates `.github/aw/actions-lock.json`. Commit this action-SHA cache with the workflow files so future compiles reuse the same immutable action pins; see the [action-pinning documentation](https://github.github.com/gh-aw/reference/compilation-process/).
